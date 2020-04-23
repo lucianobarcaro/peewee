@@ -270,6 +270,8 @@ OP = attrdict(
     NOT_IN='NOT IN',
     IS='IS',
     IS_NOT='IS NOT',
+    ISNULL='ISNULL',
+    ISNOTNULL='NOT ISNULL',
     LIKE='LIKE',
     ILIKE='ILIKE',
     BETWEEN='BETWEEN',
@@ -1170,8 +1172,10 @@ class ColumnBase(Node):
 
     # Special expressions.
     def is_null(self, is_null=True):
-        op = OP.IS if is_null else OP.IS_NOT
-        return Expression(self, op, None)
+        # Check if we're connected to mariadb or mysql
+        return FunctionExpression(self, OP.ISNULL if is_null else OP.ISNOTNULL)
+        # op = OP.IS if is_null else OP.IS_NOT
+        # return Expression(self, op, None)
     def contains(self, rhs):
         if isinstance(rhs, Node):
             rhs = Expression('%', OP.CONCAT,
@@ -1468,6 +1472,38 @@ class StringExpression(Expression):
         return self.concat(rhs)
     def __radd__(self, lhs):
         return StringExpression(lhs, OP.CONCAT, self)
+
+
+class FunctionExpression(ColumnBase):
+    def __init__(self, lhs, fn):
+        self.lhs = lhs
+        self.fn = fn
+
+    def __sql__(self, ctx):
+        overrides = {'parentheses': True}
+        # First attempt to unwrap the node, so that we can get at the underlying
+        # Field if one is present.
+        node = raw_node = self.lhs
+        if isinstance(raw_node, WrappedNode):
+            node = raw_node.unwrap()
+
+        # Set up the appropriate converter if we have a field
+        if isinstance(node, Field) and raw_node._coerce:
+            overrides['converter'] = node_db_value
+        else:
+            overrides['converter'] = None
+
+        if ctx.state.operations:
+            fn_sql = ctx.state.operations.get(self.fn, self.fn)
+        else:
+            fn_sql = self.fn
+
+        with ctx(**overrides):
+            return (ctx
+                    .literal('%s(' % fn_sql)
+                    .sql(self.lhs)
+                    .literal(')')
+                    )
 
 
 class Entity(ColumnBase):
